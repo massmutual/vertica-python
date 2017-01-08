@@ -25,19 +25,22 @@ async def vtest(loop, val):
         'read_timeout': '300',
         'autoconnect': True}
 
-    conn = vertica_python.connect(**conn_info, loop=loop)
-    await conn.startup_connection()
-    cur = conn.cursor()
-    await cur.execute("select %s as cow;" % val)
-    res = await cur.fetchone()
-    #await cur.execute("select 123 as cow;")
-    #xx = await cur.fetchone()
-    return res
+    try:
+        conn = vertica_python.connect(**conn_info, loop=loop)
+        await conn.startup_connection()
+        cur = conn.cursor()
+        await cur.execute("select %s as cow;" % val)
+        res = await cur.fetchone()
+        #await cur.execute("select 123 as cow;")
+        #xx = await cur.fetchone()
+        return res
+    except Exception as exc:
+        print("Got %r" % exc)
 
 loop = asyncio.get_event_loop()
 
 coros = []
-for x in range(100):
+for x in range(400):
     coros.append(asyncio.ensure_future(vtest(loop, random.randint(0, 1000))))
 res = asyncio.gather(*coros)
 
