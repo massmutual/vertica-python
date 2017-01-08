@@ -7,13 +7,6 @@ import vertica_python
 
 logging.getLogger('asyncio').setLevel(logging.WARNING)
 
-async def setup(loop):
-    conn = vertica_python.connect(**conn_info, loop=loop)
-    await conn.startup_connection()
-    cur = conn.cursor()
-    await cur.execute('ALTER DATABASE mydb SET MaxClientSessions = 1000;')
-    res = await cur.fetchone()
-
 
 async def vtest(loop, val):
     conn_info = {
@@ -31,6 +24,7 @@ async def vtest(loop, val):
         cur = conn.cursor()
         await cur.execute("select %s as cow;" % val)
         res = await cur.fetchone()
+        asyncio.sleep(1)
         #await cur.execute("select 123 as cow;")
         #xx = await cur.fetchone()
         return res
@@ -40,7 +34,7 @@ async def vtest(loop, val):
 loop = asyncio.get_event_loop()
 
 coros = []
-for x in range(400):
+for x in range(50):
     coros.append(asyncio.ensure_future(vtest(loop, random.randint(0, 1000))))
 res = asyncio.gather(*coros)
 
