@@ -45,7 +45,7 @@ for x in range(400):
 res = asyncio.gather(*coros)
 
 
-#loop.set_debug(enabled=True)
+loop.set_debug(enabled=True)
 loop.run_until_complete(res)
 print(res)
 loop.close()
