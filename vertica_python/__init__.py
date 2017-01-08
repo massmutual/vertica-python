@@ -28,3 +28,6 @@ paramstyle = 'named'  # WHERE name=:name
 def connect(**kwargs):
     """Opens a new connection to a Vertica database."""
     return Connection(kwargs)
+
+def connect(loop, **kwargs):
+    return Connection(loop, kwargs)

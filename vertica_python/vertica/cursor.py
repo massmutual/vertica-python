@@ -46,11 +46,11 @@ class Cursor(object):
     def close(self):
         self._closed = True
 
-    def execute(self, operation, parameters=None):
+    async def execute(self, operation, parameters=None):
         if self.closed():
             raise errors.Error('Cursor is closed')
 
-        self.flush_to_query_ready()
+        await self.flush_to_query_ready()
 
         if parameters:
             # # optional requirement
@@ -82,11 +82,11 @@ class Cursor(object):
 
         self.rowcount = -1
 
-        self.connection.write(messages.Query(operation))
+        await self.connection.write(messages.Query(operation))
 
         # read messages until we hit an Error, DataRow or ReadyForQuery
         while True:
-            message = self.connection.read_message()
+            message = await self.connection.read_message()
             # save the message because there's no way to undo the read
             self._message = message
             if isinstance(message, messages.ErrorResponse):
@@ -100,7 +100,7 @@ class Cursor(object):
             else:
                 self.connection.process_message(message)
 
-    def fetchone(self):
+    async def fetchone(self):
         if isinstance(self._message, messages.DataRow):
             if self.rowcount == -1:
                 self.rowcount = 1
@@ -109,7 +109,7 @@ class Cursor(object):
 
             row = self.row_formatter(self._message)
             # fetch next message
-            self._message = self.connection.read_message()
+            self._message = await self.connection.read_message()
             return row
         elif isinstance(self._message, messages.ReadyForQuery):
             return None
@@ -124,12 +124,12 @@ class Cursor(object):
             yield row
             row = self.fetchone()
 
-    def fetchmany(self, size=None):
+    async def fetchmany(self, size=None):
         if not size:
             size = self.arraysize
         results = []
         while True:
-            row = self.fetchone()
+            row = await self.fetchone()
             if not row:
                 break
             results.append(row)
@@ -140,18 +140,18 @@ class Cursor(object):
     def fetchall(self):
         return list(self.iterate())
 
-    def nextset(self):
+    async def nextset(self):
         # skip any data for this set if exists
-        self.flush_to_command_complete()
+        await self.flush_to_command_complete()
 
         if self._message is None:
             return None
         elif isinstance(self._message, messages.CommandComplete):
             # there might be another set, read next message to find out
-            self._message = self.connection.read_message()
+            self._message = await self.connection.read_message()
             if isinstance(self._message, messages.RowDescription):
                 # next row will be either a DataRow or CommandComplete
-                self._message = self.connection.read_message()
+                self._message = await self.connection.read_message()
                 return True
             elif isinstance(self._message, messages.ReadyForQuery):
                 return None
@@ -173,20 +173,20 @@ class Cursor(object):
     #
     # Non dbApi methods
     #
-    def flush_to_query_ready(self):
+    async def flush_to_query_ready(self):
         # if the last message isnt empty or ReadyForQuery, read all remaining messages
         if(self._message is None
            or isinstance(self._message, messages.ReadyForQuery)):
             return
 
         while True:
-            message = self.connection.read_message()
+            message = await self.connection.read_message()
             if isinstance(message, messages.ReadyForQuery):
                 self.connection.transaction_status = message.transaction_status
                 self._message = message
                 break
 
-    def flush_to_command_complete(self):
+    async def flush_to_command_complete(self):
         # if the last message isnt empty or CommandComplete, read messages until it is
         if(self._message is None
            or isinstance(self._message, messages.ReadyForQuery)
@@ -194,7 +194,7 @@ class Cursor(object):
             return
 
         while True:
-            message = self.connection.read_message()
+            message = await self.connection.read_message()
             if isinstance(message, messages.CommandComplete):
                 self._message = message
                 break
@@ -206,17 +206,17 @@ class Cursor(object):
     #   cursor.copy("COPY table(field1,field2) FROM STDIN DELIMITER ',' ENCLOSED BY '\"'", fs, buffer_size=65536)
     #
 
-    def copy(self, sql, data, **kwargs):
+    async def copy(self, sql, data, **kwargs):
 
         if self.closed():
             raise errors.Error('Cursor is closed')
 
-        self.flush_to_query_ready()
+        await self.flush_to_query_ready()
 
         self.connection.write(messages.Query(sql))
 
         while True:
-            message = self.connection.read_message()
+            message = await self.connection.read_message()
 
             if isinstance(message, messages.ErrorResponse):
                 raise errors.QueryError.from_error_response(message, sql)

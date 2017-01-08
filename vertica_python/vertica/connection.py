@@ -4,6 +4,7 @@ import logging
 import select
 import socket
 import ssl
+import asyncio
 
 from struct import unpack
 
@@ -22,7 +23,8 @@ logger = logging.getLogger('vertica')
 
 
 class Connection(object):
-    def __init__(self, options=None):
+    def __init__(self, loop, options=None):
+        self.loop = loop
         self.reset_values()
 
         options = options or {}
@@ -35,7 +37,7 @@ class Connection(object):
         self._cursor = Cursor(self, None, unicode_error=self.options['unicode_error'])
         self.options.setdefault('port', 5433)
         self.options.setdefault('read_timeout', 600)
-        self.startup_connection()
+        self.connection_started = False
 
     def __enter__(self):
         return self
@@ -99,7 +101,7 @@ class Connection(object):
         self.transaction_status = None
         self.socket = None
 
-    def _socket(self):
+    async def _socket(self):
         if self.socket is not None:
             return self.socket
 
@@ -108,25 +110,7 @@ class Connection(object):
         raw_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         raw_socket.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
         raw_socket.connect((host, port))
-
-        ssl_options = self.options.get('ssl')
-        if ssl_options is not None and ssl_options is not False:
-            from ssl import CertificateError, SSLError
-            raw_socket.sendall(messages.SslRequest().to_bytes())
-            response = raw_socket.recv(1)
-            if response in ('S', b'S'):
-                try:
-                    if isinstance(ssl_options, ssl.SSLContext):
-                        raw_socket = ssl_options.wrap_socket(raw_socket, server_hostname=host)
-                    else:
-                        raw_socket = ssl.wrap_socket(raw_socket)
-                except CertificateError as e:
-                    raise errors.ConnectionError('SSL: ' + e.message)
-                except SSLError as e:
-                    raise errors.ConnectionError('SSL: ' + e.reason)
-            else:
-                raise SSLNotSupported("SSL requested but not supported by server")
-
+        self._reader, self._writer = await asyncio.open_connection(sock=raw_socket, loop=self.loop)
         self.socket = raw_socket
         return self.socket
 
@@ -141,7 +125,7 @@ class Connection(object):
     def closed(self):
         return not self.opened()
 
-    def write(self, message):
+    async def write(self, message):
 
         is_stream = hasattr(message, "read_bytes")
 
@@ -152,15 +136,15 @@ class Connection(object):
         try:
 
             if not is_stream:
-                self._socket().sendall(message.to_bytes())
+                self._writer.write(message.to_bytes())
             else:
                 # read to end in chunks
                 while True:
-                    data = message.read_bytes()
+                    data = await message.read_bytes()
                     if len(data) == 0:
                         break
 
-                    self._socket().sendall(data)
+                    self._writer.write.sendall(data)
 
         except Exception as e:
             self.close_socket()
@@ -172,24 +156,26 @@ class Connection(object):
     def close_socket(self):
         try:
             if self.socket is not None:
+                self._reader.close()
+                self._writer.close()
                 self._socket().close()
         finally:
             self.reset_values()
 
-    def reset_connection(self):
+    async def reset_connection(self):
         self.close()
-        self.startup_connection()
+        await self.startup_connection()
 
-    def read_message(self):
+    async def read_message(self):
         try:
-            type_ = self.read_bytes(1)
-            size = unpack('!I', self.read_bytes(4))[0]
+            type_ = await self.read_bytes(1)
+            size = unpack('!I', await self.read_bytes(4))[0]
 
             if size < 4:
                 raise errors.MessageError(
                     "Bad message size: {0}".format(size)
                 )
-            message = BackendMessage.factory(type_, self.read_bytes(size - 4))
+            message = BackendMessage.factory(type_, await self.read_bytes(size - 4))
             logger.debug('<= %s', message)
             return message
         except (SystemError, IOError) as e:
@@ -236,25 +222,30 @@ class Connection(object):
         )
         return s1 + s2
 
-    def read_bytes(self, n):
+    async def read_bytes(self, n):
         results = bytes()
+        # Hack
+        await self._socket()
         while len(results) < n:
-            bytes_ = self._socket().recv(n - len(results))
+            bytes_ = await self._reader.read(n - len(results))
+            #bytes_ = self._socket().recv(n - len(results))
             if not bytes_:
                 raise errors.ConnectionError("Connection closed by Vertica")
             results = results + bytes_
         return results
 
-    def startup_connection(self):
+    async def startup_connection(self):
+        # Hack
+        await self._socket()
         # This doesn't handle Unicode usernames or passwords
         user = self.options['user'].encode('ascii')
         database = self.options['database'].encode('ascii')
         password = self.options['password'].encode('ascii')
 
-        self.write(messages.Startup(user, database))
+        await self.write(messages.Startup(user, database))
 
         while True:
-            message = self.read_message()
+            message = await self.read_message()
 
             if isinstance(message, messages.Authentication):
                 # Password message isn't right format ("incomplete message from client")
